@@ -2,6 +2,7 @@
 import { cookies } from "next/headers"
 import { query } from "./db"
 import bcrypt from "bcryptjs"
+import jwt from "jsonwebtoken"
 
 export interface User {
   id: number
@@ -13,6 +14,13 @@ export interface User {
   created_at: Date
 }
 
+export interface JWTPayload {
+  id: number
+  nome: string
+  email: string
+  papel: "usuario" | "admin"
+}
+
 export async function hashPassword(password: string): Promise<string> {
   return await bcrypt.hash(password, 10)
 }
@@ -21,59 +29,88 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return await bcrypt.compare(password, hash)
 }
 
-// Criar sessão
-export async function createSession(userId: number): Promise<string> {
-  const sessionId = Math.random().toString(36).substring(2) + Date.now().toString(36)
-  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 dias
+// Gerar JWT Token
+export function generateToken(user: { id: number; nome: string; email: string; papel: "usuario" | "admin" }): string {
+  const payload: JWTPayload = {
+    id: user.id,
+    nome: user.nome,
+    email: user.email,
+    papel: user.papel,
+  }
 
-  await query("INSERT INTO sessoes (id, usuario_id, expira_em) VALUES (?, ?, ?)", [sessionId, userId, expiresAt])
+  return jwt.sign(payload, process.env.JWT_SECRET!, {
+    expiresIn: "7d",
+  })
+}
+
+// Verificar JWT Token
+export function verifyToken(token: string): JWTPayload | null {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload
+  } catch {
+    return null
+  }
+}
+
+// Criar sessão (mantém compatibilidade, mas agora usa JWT)
+export async function createSession(userId: number): Promise<string> {
+  const users = await query("SELECT id, nome, email, papel FROM usuarios WHERE id = ?", [userId])
+
+  if (!users || users.length === 0) {
+    throw new Error("Usuário não encontrado")
+  }
+
+  const user = users[0]
+  const token = generateToken({
+    id: user.id,
+    nome: user.nome,
+    email: user.email,
+    papel: user.papel,
+  })
 
   const cookieStore = await cookies()
-  cookieStore.set("session", sessionId, {
+  cookieStore.set("token", token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    expires: expiresAt,
+    maxAge: 7 * 24 * 60 * 60,
   })
 
-  return sessionId
+  return token
 }
 
-// Obter usuário da sessão
+// Obter usuário da sessão (agora usa JWT)
 export async function getCurrentUser(): Promise<User | null> {
   const cookieStore = await cookies()
-  const sessionId = cookieStore.get("session")?.value
+  const token = cookieStore.get("token")?.value
 
-  if (!sessionId) return null
+  if (!token) return null
 
-  const sessions = await query(
-    "SELECT s.*, u.id, u.nome, u.email, u.papel, u.avatar_url, u.criado_em FROM sessoes s JOIN usuarios u ON s.usuario_id = u.id WHERE s.id = ? AND s.expira_em > NOW()",
-    [sessionId]
+  const payload = verifyToken(token)
+  if (!payload) return null
+
+  const users = await query(
+    "SELECT id, nome, email, papel, avatar_url, criado_em FROM usuarios WHERE id = ?",
+    [payload.id]
   )
 
-  if (!sessions || sessions.length === 0) return null
+  if (!users || users.length === 0) return null
 
   return {
-    id: sessions[0].id,
-    name: sessions[0].nome,
-    email: sessions[0].email,
-    role: sessions[0].papel,
-    papel: sessions[0].papel,
-    avatar_url: sessions[0].avatar_url,
-    created_at: sessions[0].criado_em,
+    id: users[0].id,
+    name: users[0].nome,
+    email: users[0].email,
+    role: users[0].papel,
+    papel: users[0].papel,
+    avatar_url: users[0].avatar_url,
+    created_at: users[0].criado_em,
   }
 }
 
 // Destruir sessão
 export async function destroySession(): Promise<void> {
   const cookieStore = await cookies()
-  const sessionId = cookieStore.get("session")?.value
-
-  if (sessionId) {
-    await query("DELETE FROM sessoes WHERE id = ?", [sessionId])
-  }
-
-  cookieStore.delete("session")
+  cookieStore.delete("token")
 }
 
 // Verificar se usuário é admin

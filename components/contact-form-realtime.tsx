@@ -33,12 +33,14 @@ export function ContactFormRealtime() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    if (chatAtivo && mensagens.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+    }
   }
 
   useEffect(() => {
     scrollToBottom()
-  }, [mensagens])
+  }, [mensagens, chatAtivo])
 
   useEffect(() => {
     if (chatAtivo && feedbackId) {
